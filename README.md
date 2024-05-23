@@ -19,7 +19,7 @@ rosrun rbl_teleop_keyboard rbl_teleop_keyboard.py cmd_vel:=my_cmd_vel
 
 # Usage
 ```
-Reading from the keyboard  and Publishing to Twist!
+Reading from the keyboard and Publishing to Twist!
 ---------------------------
 Moving around:
    u    i    o
@@ -32,10 +32,13 @@ For Holonomic mode (strafing), hold down the shift key:
    J    K    L
    M    <    >
 
-t : up (+z)
-b : down (-z)
+1 : store pose 1    ! : navigate to stored pose 1
+2 : store pose 2    @ : navigate to stored pose 2
+3 : store pose 3    # : navigate to stored pose 3
 
-anything else : stop
+H : Return Home
+Tab : clear costmaps
+Enter : cancel current goal
 
 q/z : increase/decrease max speeds by 10%
 w/x : increase/decrease only linear speed by 10%
