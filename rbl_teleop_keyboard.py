@@ -3,15 +3,16 @@
 from __future__ import print_function
 
 import threading
-
-import roslib; roslib.load_manifest('teleop_twist_keyboard')
+import roslib
+roslib.load_manifest('rbl_teleop_keyboard')
 import rospy
-
-from geometry_msgs.msg import Twist
-from geometry_msgs.msg import TwistStamped
-
+import tf
+from geometry_msgs.msg import Twist, PoseStamped, TwistStamped
 import sys
 from select import select
+from std_msgs.msg import Int32
+from actionlib_msgs.msg import GoalID
+import std_srvs.srv
 
 if sys.platform == 'win32':
     import msvcrt
@@ -19,11 +20,10 @@ else:
     import termios
     import tty
 
-
 TwistMsg = Twist
 
 msg = """
-Reading from the keyboard  and Publishing to Twist!
+Reading from the keyboard and Publishing to Twist!
 ---------------------------
 Moving around:
    u    i    o
@@ -36,10 +36,13 @@ For Holonomic mode (strafing), hold down the shift key:
    J    K    L
    M    <    >
 
-t : up (+z)
-b : down (-z)
+1 : store pose 1    ! : navigate to stored pose 1
+2 : store pose 2    @ : navigate to stored pose 2
+3 : store pose 3    # : navigate to stored pose 3
 
-anything else : stop
+H : Return Home
+Tab : clear costmaps
+Enter : cancel current goal
 
 q/z : increase/decrease max speeds by 10%
 w/x : increase/decrease only linear speed by 10%
@@ -49,39 +52,39 @@ CTRL-C to quit
 """
 
 moveBindings = {
-        'i':(1,0,0,0),
-        'o':(1,0,0,-1),
-        'j':(0,0,0,1),
-        'l':(0,0,0,-1),
-        'u':(1,0,0,1),
-        ',':(-1,0,0,0),
-        '.':(-1,0,0,1),
-        'm':(-1,0,0,-1),
-        'O':(1,-1,0,0),
-        'I':(1,0,0,0),
-        'J':(0,1,0,0),
-        'L':(0,-1,0,0),
-        'U':(1,1,0,0),
-        '<':(-1,0,0,0),
-        '>':(-1,-1,0,0),
-        'M':(-1,1,0,0),
-        't':(0,0,1,0),
-        'b':(0,0,-1,0),
-    }
+    'i': (1, 0, 0, 0),
+    'o': (1, 0, 0, -1),
+    'j': (0, 0, 0, 1),
+    'l': (0, 0, 0, -1),
+    'u': (1, 0, 0, 1),
+    ',': (-1, 0, 0, 0),
+    '.': (-1, 0, 0, 1),
+    'm': (-1, 0, 0, -1),
+    'O': (1, -1, 0, 0),
+    'I': (1, 0, 0, 0),
+    'J': (0, 1, 0, 0),
+    'L': (0, -1, 0, 0),
+    'U': (1, 1, 0, 0),
+    '<': (-1, 0, 0, 0),
+    '>': (-1, -1, 0, 0),
+    'M': (-1, 1, 0, 0),
+    't': (0, 0, 1, 0),
+    'b': (0, 0, -1, 0),
+}
 
-speedBindings={
-        'q':(1.1,1.1),
-        'z':(.9,.9),
-        'w':(1.1,1),
-        'x':(.9,1),
-        'e':(1,1.1),
-        'c':(1,.9),
-    }
+speedBindings = {
+    'q': (1.1, 1.1),
+    'z': (.9, .9),
+    'w': (1.1, 1),
+    'x': (.9, 1),
+    'e': (1, 1.1),
+    'c': (1, .9),
+}
 
 class PublishThread(threading.Thread):
     def __init__(self, rate):
         super(PublishThread, self).__init__()
-        self.publisher = rospy.Publisher('cmd_vel', TwistMsg, queue_size = 1)
+        self.publisher = rospy.Publisher('cmd_vel', TwistMsg, queue_size=1)
         self.x = 0.0
         self.y = 0.0
         self.z = 0.0
@@ -91,8 +94,6 @@ class PublishThread(threading.Thread):
         self.condition = threading.Condition()
         self.done = False
 
-        # Set timeout to None if rate is 0 (causes new_message to wait forever
-        # for new data to publish)
         if rate != 0.0:
             self.timeout = 1.0 / rate
         else:
@@ -119,7 +120,6 @@ class PublishThread(threading.Thread):
         self.th = th
         self.speed = speed
         self.turn = turn
-        # Notify publish thread that we have a new message.
         self.condition.notify()
         self.condition.release()
 
@@ -141,10 +141,8 @@ class PublishThread(threading.Thread):
             if stamped:
                 twist_msg.header.stamp = rospy.Time.now()
             self.condition.acquire()
-            # Wait for a new message or timeout.
             self.condition.wait(self.timeout)
 
-            # Copy state into twist message.
             twist.linear.x = self.x * self.speed
             twist.linear.y = self.y * self.speed
             twist.linear.z = self.z * self.speed
@@ -154,10 +152,8 @@ class PublishThread(threading.Thread):
 
             self.condition.release()
 
-            # Publish.
             self.publisher.publish(twist_msg)
 
-        # Publish stop message when thread exits.
         twist.linear.x = 0
         twist.linear.y = 0
         twist.linear.z = 0
@@ -166,14 +162,11 @@ class PublishThread(threading.Thread):
         twist.angular.z = 0
         self.publisher.publish(twist_msg)
 
-
 def getKey(settings, timeout):
     if sys.platform == 'win32':
-        # getwch() returns a string on Windows
         key = msvcrt.getwch()
     else:
         tty.setraw(sys.stdin.fileno())
-        # sys.stdin.read() returns a string on Linux
         rlist, _, _ = select([sys.stdin], [], [], timeout)
         if rlist:
             key = sys.stdin.read(1)
@@ -193,23 +186,58 @@ def restoreTerminalSettings(old_settings):
     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 def vels(speed, turn):
-    return "currently:\tspeed %s\tturn %s " % (speed,turn)
+    return "currently:\tspeed %s\tturn %s " % (speed, turn)
 
-if __name__=="__main__":
+def go_home():
+    # Define the home pose
+    home_pose = PoseStamped()
+    home_pose.header.stamp = rospy.Time.now()
+    home_pose.header.frame_id = "map"
+    home_pose.pose.position.x = 0.0
+    home_pose.pose.position.y = 0.0
+    home_pose.pose.position.z = 0.0
+    home_pose.pose.orientation.x = 0.0
+    home_pose.pose.orientation.y = 0.0
+    home_pose.pose.orientation.z = 0.0
+    home_pose.pose.orientation.w = 1.0
+    
+    # Publish the home pose
+    pose_pub.publish(home_pose)
+    rospy.loginfo("Going home")
+    
+def store_pose(tf_listener, pose, pose_name):
+    try:
+        now = rospy.Time.now()
+        tf_listener.waitForTransform("map", "base_link", now, rospy.Duration(1.0))
+        (trans, rot) = tf_listener.lookupTransform("map", "base_link", now)
+        pose.header.stamp = now
+        pose.header.frame_id = "map"
+        pose.pose.position.x = trans[0]
+        pose.pose.position.y = trans[1]
+        pose.pose.position.z = trans[2]
+        pose.pose.orientation.x = rot[0]
+        pose.pose.orientation.y = rot[1]
+        pose.pose.orientation.z = rot[2]
+        pose.pose.orientation.w = rot[3]
+        rospy.loginfo(f"{pose_name} pose stored")
+    except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
+        rospy.logerr(f"Failed to store {pose_name}: {e}")
+
+if __name__ == "__main__":
     settings = saveTerminalSettings()
 
-    rospy.init_node('teleop_twist_keyboard')
+    rospy.init_node('rbl_teleop_keyboard')
 
     speed = rospy.get_param("~speed", 0.5)
     turn = rospy.get_param("~turn", 1.0)
     speed_limit = rospy.get_param("~speed_limit", 1000)
     turn_limit = rospy.get_param("~turn_limit", 1000)
     repeat = rospy.get_param("~repeat_rate", 0.0)
-    key_timeout = rospy.get_param("~key_timeout", 0.5)
+    key_timeout = rospy.get_param("~key_timeout", 5.0)
     stamped = rospy.get_param("~stamped", False)
     twist_frame = rospy.get_param("~frame_id", '')
     if stamped:
-        TwistMsg = TwistStamped
+        TwistMsg = TwistStamped()
 
     pub_thread = PublishThread(repeat)
 
@@ -219,13 +247,23 @@ if __name__=="__main__":
     th = 0
     status = 0
 
+    pose_1 = PoseStamped()
+    pose_2 = PoseStamped()
+    pose_3 = PoseStamped()
+
+    tf_listener = tf.TransformListener()
+
+    pose_pub = rospy.Publisher('move_base_simple/goal', PoseStamped, queue_size=1)
+    goal_cancel_pub = rospy.Publisher('move_base/cancel', GoalID, queue_size=1)
+    goal_status_pub = rospy.Publisher('robot/nav_status', Int32, queue_size=1)
+
     try:
         pub_thread.wait_for_subscribers()
         pub_thread.update(x, y, z, th, speed, turn)
 
         print(msg)
-        print(vels(speed,turn))
-        while(1):
+        print(vels(speed, turn))
+        while not rospy.is_shutdown():
             key = getKey(settings, key_timeout)
             if key in moveBindings.keys():
                 x = moveBindings[key][0]
@@ -233,26 +271,50 @@ if __name__=="__main__":
                 z = moveBindings[key][2]
                 th = moveBindings[key][3]
             elif key in speedBindings.keys():
-                speed = min(speed_limit, speed * speedBindings[key][0])
-                turn = min(turn_limit, turn * speedBindings[key][1])
-                if speed == speed_limit:
-                    print("Linear speed limit reached!")
-                if turn == turn_limit:
-                    print("Angular speed limit reached!")
-                print(vels(speed,turn))
-                if (status == 14):
+                speed = speed * speedBindings[key][0]
+                turn = turn * speedBindings[key][1]
+                speed = min(speed, speed_limit)
+                turn = min(turn, turn_limit)
+
+                print(vels(speed, turn))
+                if status == 14:
                     print(msg)
                 status = (status + 1) % 15
+            elif key == '1':
+                store_pose(tf_listener, pose_1, "Pose 1")
+                goal_status_pub.publish(Int32(data=5))
+            elif key == '2':
+                store_pose(tf_listener, pose_2, "Pose 2")
+                goal_status_pub.publish(Int32(data=5))
+            elif key == '3':
+                store_pose(tf_listener, pose_3, "Pose 3")
+                goal_status_pub.publish(Int32(data=5))
+            elif key == '!':
+                pose_pub.publish(pose_1)
+                rospy.loginfo("Navigating to Pose 1")
+            elif key == '@':
+                pose_pub.publish(pose_2)
+                rospy.loginfo("Navigating to Pose 2")
+            elif key == '#':
+                pose_pub.publish(pose_3)
+                rospy.loginfo("Navigating to Pose 3")
+            elif key == 'H':
+                go_home()
+            elif key == '\t':
+                rospy.wait_for_service('move_base/clear_costmaps')
+                clear_costmaps = rospy.ServiceProxy('move_base/clear_costmaps', std_srvs.srv.Empty)
+                clear_costmaps()
+                rospy.loginfo("Costmaps cleared")
+                goal_status_pub.publish(Int32(data=4))
+            elif key == '\r':
+                goal_cancel_pub.publish(GoalID())
+                rospy.loginfo("Current goal canceled")
             else:
-                # Skip updating cmd_vel if key timeout and robot already
-                # stopped.
-                if key == '' and x == 0 and y == 0 and z == 0 and th == 0:
-                    continue
                 x = 0
                 y = 0
                 z = 0
                 th = 0
-                if (key == '\x03'):
+                if key == '\x03':
                     break
 
             pub_thread.update(x, y, z, th, speed, turn)

@@ -1,16 +1,16 @@
 <?xml version="1.0"?>
 <package>
-  <name>teleop_twist_keyboard</name>
+  <name>rbl_teleop_keyboard</name>
   <version>1.0.0</version>
   <description>Generic keyboard teleop for twist robots.</description>
 
-  <maintainer email="namniart@gmail.com">Austin Hendrix</maintainer>
+  <maintainer email="kartiksoni010@gmail.com">Kartik Soni</maintainer>
 
   <license>BSD</license>
 
-  <url type="website">http://wiki.ros.org/teleop_twist_keyboard</url>
+  <url type="website">http://wiki.ros.org/rbl_teleop_keyboard</url>
 
-  <author>Graylin Trevor Jay</author>
+  <author>Kartik Soni</author>
 
   <buildtool_depend>catkin</buildtool_depend>
   <run_depend>geometry_msgs</run_depend>
